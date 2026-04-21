@@ -1,2 +1,6 @@
 streamlit
 copydetect
+plotly
+pandas
+pdfplumber
+python-docx
