@@ -23,10 +23,10 @@ def extract_code_from_file(uploaded_file):
             with pdfplumber.open(tmp_path) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text() or ""
-                    # Simple heuristic: keep lines that look like code (indent, keywords, braces, etc.)
-                    code_lines = [line for line in page_text.split('\n') 
-                                  if line.strip() and (line.strip()[0].isspace() or 
-                                      any(k in line for k in ['def ', 'int ', 'public ', '{', '}', 'import ', 'print', '//', '/*', '#']))]
+                    code_lines = [line for line in page_text.split('\n')
+                                  if line.strip() and (line.strip()[0].isspace() or
+                                      any(k in line for k in ['def ', 'int ', 'public ', '{', '}', 'import ', 
+                                                              'print', '//', '/*', '#', 'class ']))]
                     text += '\n'.join(code_lines) + '\n'
             Path(tmp_path).unlink(missing_ok=True)
             return text.strip()
@@ -37,35 +37,32 @@ def extract_code_from_file(uploaded_file):
                 tmp.write(content)
                 tmp_path = tmp.name
             doc = Document(tmp_path)
-            text = "\n".join([para.text for para in doc.paragraphs 
+            text = "\n".join([para.text for para in doc.paragraphs
                               if any(k in para.text for k in ['def ', '{', '}', 'import ', 'class ', '#', '//'])])
             Path(tmp_path).unlink(missing_ok=True)
             return text.strip()
 
         else:
-            # TXT or direct code files (.py, .java, etc.)
+            # Direct code files or TXT
             return content.decode("utf-8", errors="ignore").strip()
 
     except Exception as e:
         st.warning(f"Could not fully extract code from {filename}. Using raw text.")
         return content.decode("utf-8", errors="ignore").strip()
 
+
 # ------------------- Streamlit App -------------------
 st.set_page_config(page_title="Assignment Code Checker", page_icon="📋", layout="wide")
+
 st.title("📋 Assignment Code Similarity Checker")
 st.markdown("**For Teachers** • Upload multiple student submissions → Get similarity heatmap + detailed highlights")
 
-with st.sidebar:
-    st.header("⚙️ Settings")
-    k = st.slider("Detection Precision (k-gram)", 5, 50, 25)
-    win_size = st.slider("Window Size", 1, 10, 1)
-    threshold = st.slider("Plagiarism Alert Threshold (%)", 30, 90, 60)
-
-# File uploader - multiple files
+# File uploader - multiple files (clean label, no size mention)
 uploaded_files = st.file_uploader(
-    "Upload student assignments (PDF, DOCX, TXT, .py, .java, .cpp, etc.)",
+    "Upload student assignments (PDF, DOCX, TXT, .py, .java, .cpp, .c, etc.)",
     type=None,
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="You can upload multiple files at once. Code will be automatically extracted from PDFs and Word files."
 )
 
 if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", use_container_width=True):
@@ -84,34 +81,34 @@ if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", 
                 st.warning(f"Skipped empty file: {file.name}")
 
         if len(student_codes) < 2:
-            st.error("Not enough valid code extracted.")
+            st.error("Not enough valid code extracted from the uploaded files.")
             st.stop()
 
         names = list(student_codes.keys())
         n = len(names)
 
-        # Compute pairwise similarities
+        # Compute pairwise similarities using copydetect (quietly)
         similarity_matrix = pd.DataFrame(0.0, index=names, columns=names)
         results = []
 
         for i in range(n):
-            for j in range(i+1, n):
+            for j in range(i + 1, n):
                 name1, name2 = names[i], names[j]
                 code1, code2 = student_codes[name1], student_codes[name2]
 
                 try:
-                    fp1 = CodeFingerprint(file=name1, k=k, win_size=win_size, fp=io.StringIO(code1))
-                    fp2 = CodeFingerprint(file=name2, k=k, win_size=win_size, fp=io.StringIO(code2))
+                    fp1 = CodeFingerprint(file=name1, k=25, win_size=1, fp=io.StringIO(code1))
+                    fp2 = CodeFingerprint(file=name2, k=25, win_size=1, fp=io.StringIO(code2))
 
                     token_overlap, sims, slices = compare_files(fp1, fp2)
-                    sim_score = max(sims[0], sims[1])  # symmetric max
+                    sim_score = max(sims[0], sims[1])  # symmetric
 
                     similarity_matrix.loc[name1, name2] = sim_score
                     similarity_matrix.loc[name2, name1] = sim_score
 
-                    if sim_score >= threshold / 100:
+                    if sim_score >= 0.60:
                         flag = "🔴 High"
-                    elif sim_score >= 0.4:
+                    elif sim_score >= 0.40:
                         flag = "🟡 Medium"
                     else:
                         flag = "🟢 Low"
@@ -133,7 +130,7 @@ if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", 
             x=names,
             y=names,
             text_auto=".0%",
-            color_continuous_scale="RdYlGn_r",  # Red = high similarity
+            color_continuous_scale="RdYlGn_r",
             aspect="auto"
         )
         fig.update_layout(height=600)
@@ -156,20 +153,20 @@ if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", 
         with col_b:
             stud2 = st.selectbox("Select Second Student", [n for n in names if n != stud1], key="s2")
 
-        if st.button("Show Highlighted Similar Sections"):
+        if st.button("Show Highlighted Similar Sections", use_container_width=True):
             try:
                 code1 = student_codes[stud1]
                 code2 = student_codes[stud2]
-                fp1 = CodeFingerprint(file=stud1, k=k, win_size=win_size, fp=io.StringIO(code1))
-                fp2 = CodeFingerprint(file=stud2, k=k, win_size=win_size, fp=io.StringIO(code2))
+                fp1 = CodeFingerprint(file=stud1, k=25, win_size=1, fp=io.StringIO(code1))
+                fp2 = CodeFingerprint(file=stud2, k=25, win_size=1, fp=io.StringIO(code2))
                 _, _, slices = compare_files(fp1, fp2)
 
                 if len(slices[0]) > 0:
-                    hl1, _ = highlight_overlap(fp1.raw_code, slices[0], 
-                                               left_hl=">>> SIMILAR START <<<\n", 
+                    hl1, _ = highlight_overlap(fp1.raw_code, slices[0],
+                                               left_hl=">>> SIMILAR START <<<\n",
                                                right_hl="\n>>> SIMILAR END <<<")
-                    hl2, _ = highlight_overlap(fp2.raw_code, slices[1], 
-                                               left_hl=">>> SIMILAR START <<<\n", 
+                    hl2, _ = highlight_overlap(fp2.raw_code, slices[1],
+                                               left_hl=">>> SIMILAR START <<<\n",
                                                right_hl="\n>>> SIMILAR END <<<")
 
                     c1, c2 = st.columns(2)
@@ -185,4 +182,4 @@ if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", 
                 st.error(f"Error showing details: {e}")
 
 st.divider()
-st.caption("Built for teachers • Code extraction focuses only on programming content • Similarity powered quietly by winnowing fingerprints")
+st.caption("Built for teachers • Intelligent code extraction from PDFs & documents • Powered quietly by advanced fingerprinting")
