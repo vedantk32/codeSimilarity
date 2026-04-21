@@ -1,122 +1,188 @@
 import streamlit as st
 import io
+import tempfile
 from pathlib import Path
-
-# Internal similarity engine (powered quietly)
+import pandas as pd
+import plotly.express as px
 from copydetect import CodeFingerprint, compare_files
 from copydetect.utils import highlight_overlap
 
-st.set_page_config(
-    page_title="Code Similarity Checker",
-    page_icon="🔍",
-    layout="wide"
+# ------------------- Code Extraction Helpers -------------------
+def extract_code_from_file(uploaded_file):
+    """Extract only code blocks from PDF, DOCX, TXT, or code files. Ignores theory text."""
+    filename = uploaded_file.name.lower()
+    content = uploaded_file.read()
+
+    try:
+        if filename.endswith('.pdf'):
+            import pdfplumber
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            text = ""
+            with pdfplumber.open(tmp_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    # Simple heuristic: keep lines that look like code (indent, keywords, braces, etc.)
+                    code_lines = [line for line in page_text.split('\n') 
+                                  if line.strip() and (line.strip()[0].isspace() or 
+                                      any(k in line for k in ['def ', 'int ', 'public ', '{', '}', 'import ', 'print', '//', '/*', '#']))]
+                    text += '\n'.join(code_lines) + '\n'
+            Path(tmp_path).unlink(missing_ok=True)
+            return text.strip()
+
+        elif filename.endswith(('.docx', '.doc')):
+            from docx import Document
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            doc = Document(tmp_path)
+            text = "\n".join([para.text for para in doc.paragraphs 
+                              if any(k in para.text for k in ['def ', '{', '}', 'import ', 'class ', '#', '//'])])
+            Path(tmp_path).unlink(missing_ok=True)
+            return text.strip()
+
+        else:
+            # TXT or direct code files (.py, .java, etc.)
+            return content.decode("utf-8", errors="ignore").strip()
+
+    except Exception as e:
+        st.warning(f"Could not fully extract code from {filename}. Using raw text.")
+        return content.decode("utf-8", errors="ignore").strip()
+
+# ------------------- Streamlit App -------------------
+st.set_page_config(page_title="Assignment Code Checker", page_icon="📋", layout="wide")
+st.title("📋 Assignment Code Similarity Checker")
+st.markdown("**For Teachers** • Upload multiple student submissions → Get similarity heatmap + detailed highlights")
+
+with st.sidebar:
+    st.header("⚙️ Settings")
+    k = st.slider("Detection Precision (k-gram)", 5, 50, 25)
+    win_size = st.slider("Window Size", 1, 10, 1)
+    threshold = st.slider("Plagiarism Alert Threshold (%)", 30, 90, 60)
+
+# File uploader - multiple files
+uploaded_files = st.file_uploader(
+    "Upload student assignments (PDF, DOCX, TXT, .py, .java, .cpp, etc.)",
+    type=None,
+    accept_multiple_files=True
 )
 
-st.title("🔍 Code Similarity Checker")
-st.markdown("""
-A smart tool that analyzes the **logical structure** of two code pieces and highlights similar sections.  
-It focuses on core logic while being robust to changes in variable names, comments, formatting, and whitespace.
-""")
-
-# Sidebar – neutral settings
-with st.sidebar:
-    st.header("⚙️ Analysis Settings")
-    k_value = st.slider("Detection Precision", min_value=5, max_value=50, value=25,
-                        help="Higher value makes detection more precise (fewer false matches)")
-    window = st.slider("Analysis Window", min_value=1, max_value=10, value=1)
-    st.caption("Adjust for your use case — higher precision reduces noise.")
-
-# Two-column input
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("First Code / File")
-    uploaded1 = st.file_uploader("Upload file", type=None, key="up1")
-    if uploaded1:
-        code1 = uploaded1.getvalue().decode("utf-8", errors="ignore")
-        filename1 = uploaded1.name
-        st.caption(f"📄 {filename1} • {len(code1):,} characters")
-    else:
-        filename1 = st.text_input("Filename for syntax highlighting", "file1.py", key="fn1")
-        code1 = st.text_area("Paste your first code here", height=420, key="c1")
-
-with col2:
-    st.subheader("Second Code / File")
-    uploaded2 = st.file_uploader("Upload file", type=None, key="up2")
-    if uploaded2:
-        code2 = uploaded2.getvalue().decode("utf-8", errors="ignore")
-        filename2 = uploaded2.name
-        st.caption(f"📄 {filename2} • {len(code2):,} characters")
-    else:
-        filename2 = st.text_input("Filename for syntax highlighting", "file2.py", key="fn2")
-        code2 = st.text_area("Paste your second code here", height=420, key="c2")
-
-if st.button("🔍 Run Similarity Analysis", type="primary", use_container_width=True):
-    if not (code1.strip() and code2.strip()):
-        st.error("Please provide code in both sections.")
+if uploaded_files and st.button("🚀 Analyze All Submissions", type="primary", use_container_width=True):
+    if len(uploaded_files) < 2:
+        st.error("Please upload at least 2 files for comparison.")
         st.stop()
 
-    with st.spinner("Analyzing logical structure..."):
-        try:
-            # Quiet internal processing
-            fp1 = CodeFingerprint(
-                file=filename1,
-                k=k_value,
-                win_size=window,
-                fp=io.StringIO(code1),
-                filter=True
-            )
-            fp2 = CodeFingerprint(
-                file=filename2,
-                k=k_value,
-                win_size=window,
-                fp=io.StringIO(code2),
-                filter=True
-            )
-
-            token_overlap, similarities, overlap_slices = compare_files(fp1, fp2)
-
-            st.success("✅ Analysis complete!")
-
-            # Results metrics
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("Similar Tokens Detected", f"{token_overlap:,}")
-            with m2:
-                st.metric("Similarity Score (First → Second)", f"{similarities[0]:.1%}")
-            with m3:
-                st.metric("Similarity Score (Second → First)", f"{similarities[1]:.1%}")
-
-            # Highlighted similar sections
-            if token_overlap > 0 and len(overlap_slices[0]) > 0:
-                st.subheader("📍 Similar Sections Highlighted")
-
-                hl1, _ = highlight_overlap(
-                    fp1.raw_code, overlap_slices[0],
-                    left_hl=">>> SIMILAR START <<<\n",
-                    right_hl="\n>>> SIMILAR END <<<"
-                )
-                hl2, _ = highlight_overlap(
-                    fp2.raw_code, overlap_slices[1],
-                    left_hl=">>> SIMILAR START <<<\n",
-                    right_hl="\n>>> SIMILAR END <<<"
-                )
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**First Code** (similar parts marked)")
-                    st.code(hl1, language=Path(filename1).suffix.lstrip(".") or None)
-                with c2:
-                    st.markdown("**Second Code** (similar parts marked)")
-                    st.code(hl2, language=Path(filename2).suffix.lstrip(".") or None)
+    with st.spinner("Extracting code and computing similarities..."):
+        # Extract code from each file
+        student_codes = {}
+        for file in uploaded_files:
+            code = extract_code_from_file(file)
+            if code.strip():
+                student_codes[file.name] = code
             else:
-                st.info("No significant structural similarity detected above the current threshold.")
+                st.warning(f"Skipped empty file: {file.name}")
 
-            st.caption("The tool emphasizes logical patterns over exact text matching.")
+        if len(student_codes) < 2:
+            st.error("Not enough valid code extracted.")
+            st.stop()
 
-        except Exception as e:
-            st.error(f"Analysis error: {str(e)}")
-            st.info("Try shorter code snippets or adjust the precision slider.")
+        names = list(student_codes.keys())
+        n = len(names)
+
+        # Compute pairwise similarities
+        similarity_matrix = pd.DataFrame(0.0, index=names, columns=names)
+        results = []
+
+        for i in range(n):
+            for j in range(i+1, n):
+                name1, name2 = names[i], names[j]
+                code1, code2 = student_codes[name1], student_codes[name2]
+
+                try:
+                    fp1 = CodeFingerprint(file=name1, k=k, win_size=win_size, fp=io.StringIO(code1))
+                    fp2 = CodeFingerprint(file=name2, k=k, win_size=win_size, fp=io.StringIO(code2))
+
+                    token_overlap, sims, slices = compare_files(fp1, fp2)
+                    sim_score = max(sims[0], sims[1])  # symmetric max
+
+                    similarity_matrix.loc[name1, name2] = sim_score
+                    similarity_matrix.loc[name2, name1] = sim_score
+
+                    if sim_score >= threshold / 100:
+                        flag = "🔴 High"
+                    elif sim_score >= 0.4:
+                        flag = "🟡 Medium"
+                    else:
+                        flag = "🟢 Low"
+
+                    results.append({
+                        "Student 1": name1,
+                        "Student 2": name2,
+                        "Similarity": f"{sim_score:.1%}",
+                        "Flag": flag,
+                        "Overlapping Tokens": token_overlap
+                    })
+                except:
+                    pass  # Skip problematic pairs
+
+        # Display Heatmap
+        st.subheader("🔥 Similarity Heatmap")
+        fig = px.imshow(
+            similarity_matrix.values,
+            x=names,
+            y=names,
+            text_auto=".0%",
+            color_continuous_scale="RdYlGn_r",  # Red = high similarity
+            aspect="auto"
+        )
+        fig.update_layout(height=600)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Results Table
+        st.subheader("📊 Pairwise Results")
+        if results:
+            df = pd.DataFrame(results)
+            df = df.sort_values("Similarity", ascending=False)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No significant similarities found.")
+
+        # Detailed view for selected pair
+        st.subheader("🔍 Detailed Highlighted Comparison")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            stud1 = st.selectbox("Select First Student", names, key="s1")
+        with col_b:
+            stud2 = st.selectbox("Select Second Student", [n for n in names if n != stud1], key="s2")
+
+        if st.button("Show Highlighted Similar Sections"):
+            try:
+                code1 = student_codes[stud1]
+                code2 = student_codes[stud2]
+                fp1 = CodeFingerprint(file=stud1, k=k, win_size=win_size, fp=io.StringIO(code1))
+                fp2 = CodeFingerprint(file=stud2, k=k, win_size=win_size, fp=io.StringIO(code2))
+                _, _, slices = compare_files(fp1, fp2)
+
+                if len(slices[0]) > 0:
+                    hl1, _ = highlight_overlap(fp1.raw_code, slices[0], 
+                                               left_hl=">>> SIMILAR START <<<\n", 
+                                               right_hl="\n>>> SIMILAR END <<<")
+                    hl2, _ = highlight_overlap(fp2.raw_code, slices[1], 
+                                               left_hl=">>> SIMILAR START <<<\n", 
+                                               right_hl="\n>>> SIMILAR END <<<")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"**{stud1}** (highlighted)")
+                        st.code(hl1, language=Path(stud1).suffix.lstrip(".") or None)
+                    with c2:
+                        st.markdown(f"**{stud2}** (highlighted)")
+                        st.code(hl2, language=Path(stud2).suffix.lstrip(".") or None)
+                else:
+                    st.info("No overlapping sections detected for this pair.")
+            except Exception as e:
+                st.error(f"Error showing details: {e}")
 
 st.divider()
-st.markdown("Built by **Vedant** • Ready for Streamlit Cloud or Hugging Face Spaces")
+st.caption("Built for teachers • Code extraction focuses only on programming content • Similarity powered quietly by winnowing fingerprints")
