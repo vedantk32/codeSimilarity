@@ -1,15 +1,17 @@
-# Code Similarity Checker
+# Assignment Code Similarity Checker (Teacher Edition)
 
-A clean web app to compare two code files or snippets and detect structural similarity.
+Perfect tool for teachers to detect code plagiarism in student assignments.
 
 ## Features
-- Upload files or paste code
-- Adjustable detection precision
-- Highlights logically similar sections
-- Robust to renamed variables, comments, and formatting changes
-- Modern, professional interface
+- Upload multiple files (PDF, DOCX, TXT, code files)
+- Automatically extracts **only code** (ignores theory/questions)
+- Interactive similarity heatmap
+- Color-coded plagiarism flags
+- Click any pair to see highlighted similar sections
 
-## Local Run
-```bash
-pip install -r requirements.txt
-streamlit run app.py
+## How to Deploy
+1. Push this folder to GitHub
+2. Go to Streamlit Cloud → New App → connect your repo
+3. Deploy!
+
+Made for Vedant
